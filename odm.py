@@ -1,4 +1,5 @@
 #!/usr/bin/python
+import os
 import ldap
 import ldap.schema.subentry
 
@@ -257,6 +258,7 @@ class LdapMapper:
 		oplist = [('objectClass', objdef.oclist)]
 		for attrdef in objdef.attrlist:
 			attr_name = attrdef.name
+			if attr_name.lower() == 'objectclass': continue
 			value = getattr(obj, attr_name, None)
 			if value is not None: # FIXME: should this be "value is not None" or "not value"?
 				if not attrdef.multi: value = [value]
@@ -276,6 +278,14 @@ class LdapMapper:
 		for attrdef in objdef.attrlist:
 			attr_name = attrdef.name
 			value = getattr(obj, attr_name, None)
+			if attr_name.lower() == 'objectclass':
+				oc1 = list(objdef.oclist)
+				oc2 = list(value)
+				oc1.sort()
+				oc2.sort()
+				if oc1 != oc2:
+					oplist.append((ldap.MOD_REPLACE, attr_name, oc1))
+				continue
 			if value is not None:
 				if not attrdef.multi: value = [value]
 				value = self.map_python_to_ldap(attrdef, value)
@@ -304,3 +314,23 @@ class LdapMapper:
 		if delold: delattr(obj, old_attr[0])
 		setattr(obj, new_attr[0], new_attr[1])
 		setattr(obj, 'dn', '%s,%s' % (new_rdn, new_sdn))
+
+	def smbpasswd(self, obj, passwd):
+		# only set sambaNTPassword, because sambaLNPassword is weaker and
+		# rarely used (only on Windows 95 and Windows NT 4 and earlier)
+
+		# just raise ImportError if Crypto.Hash.MD4 does not exist
+		from Crypto.Hash import MD4
+		hash = MD4.new(passwd.encode('utf-16-le'))
+		setattr(obj, 'sambaNTPassword', hash.hexdigest().upper())
+		self.modify(obj)
+
+	def passwd(self, obj, old_passwd, new_passwd):
+		self.server.passwd_s(obj.dn, old_passwd, new_passwd)
+
+	def bind_passwd(self, bind_dn, bind_passwd, obj, new_passwd):
+		# python-ldap doesn't provide methods change password without original password.
+		args = ['ldappasswd', '-x', '-H', self.server.get_option(ldap.OPT_URI)]
+		args.extend(('-D', bind_dn, '-w', bind_passwd, '-s', new_passwd)) # won't work with unicode str
+		args.append(obj.dn)
+		os.spawnvp(os.P_WAIT, 'ldappasswd', args)
